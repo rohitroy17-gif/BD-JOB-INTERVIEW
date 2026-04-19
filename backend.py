@@ -16,14 +16,15 @@ client = genai.Client(api_key=api_key)
 # =========================
 # QUESTION GENERATION
 # =========================
-def generate_question(role, difficulty,language, previous_questions):
+def generate_question(role, difficulty, language, previous_questions):
     prompt = f"""
 You are a professional technical interviewer.
 
 Generate ONE interview question for:
 Role: {role}
 Difficulty: {difficulty}
-Language:{language}
+Language: {language}
+
 Do NOT repeat these questions:
 {chr(10).join(previous_questions)}
 
@@ -43,7 +44,7 @@ Return ONLY the question text.
 
 
 # =========================
-# ANSWER EVALUATION (FIXED - JSON OUTPUT)
+# ANSWER EVALUATION
 # =========================
 def evaluate_answer(question, answer):
     prompt = f"""
@@ -77,7 +78,6 @@ Rules:
 
         text = response.text.strip()
 
-        # Extract JSON safely (handles accidental extra text)
         json_match = re.search(r"\{.*\}", text, re.DOTALL)
         if json_match:
             return json.loads(json_match.group())
@@ -99,23 +99,31 @@ Rules:
 
 
 # =========================
-# INTERVIEW SESSION START
+# START INTERVIEW
 # =========================
-def start_interview(role, difficulty,language):
+def start_interview(role, difficulty, language):
     return {
         "role": role,
         "difficulty": difficulty,
-        "language":language,
+        "language": language,
         "questions": [],
         "answers": [],
-        "scores": []
+        "scores": [],
+        "current_index": 0,
+        "max_questions": 2,
+        "completed": False
     }
 
 
 # =========================
-# NEXT QUESTION (SAFE UPDATE)
+# NEXT QUESTION
 # =========================
 def next_question(session):
+
+    if session["current_index"] >= session["max_questions"]:
+        session["completed"] = True
+        return None
+
     question = generate_question(
         session["role"],
         session["difficulty"],
@@ -124,17 +132,20 @@ def next_question(session):
     )
 
     session["questions"].append(question)
+    session["current_index"] += 1
+
     return question
 
 
 # =========================
-# SUBMIT ANSWER + EVALUATION
+# SUBMIT ANSWER
 # =========================
 def submit_answer(session, answer):
-    if not session["questions"]:
+
+    if session.get("completed"):
         return {
             "score": 0,
-            "strengths": "No question available",
+            "strengths": "Interview completed",
             "weaknesses": "",
             "ideal_answer": ""
         }
@@ -149,11 +160,11 @@ def submit_answer(session, answer):
 
 
 # =========================
-# GET RESULTS
+# RESULTS
 # =========================
 def get_results(session):
-    scores = session.get("scores", [])
 
+    scores = session.get("scores", [])
     avg = sum(scores) / len(scores) if scores else 0
 
     return {
