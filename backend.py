@@ -36,7 +36,6 @@ Return ONLY the question text.
             model="gemini-3-flash-preview",
             contents=prompt
         )
-
         return response.text.strip()
 
     except Exception:
@@ -110,8 +109,9 @@ def start_interview(role, difficulty, language):
         "answers": [],
         "scores": [],
         "current_index": 0,
-        "max_questions": 2,
-        "completed": False
+        "max_questions": 2,   # you can change to 5 later
+        "completed": False,
+        "last_answered": False
     }
 
 
@@ -120,8 +120,8 @@ def start_interview(role, difficulty, language):
 # =========================
 def next_question(session):
 
+    # Stop generating more questions
     if session["current_index"] >= session["max_questions"]:
-        session["completed"] = True
         return None
 
     question = generate_question(
@@ -134,27 +134,60 @@ def next_question(session):
     session["questions"].append(question)
     session["current_index"] += 1
 
+    # reset answer flag for new question
+    session["last_answered"] = False
+
     return question
 
 
 # =========================
-# SUBMIT ANSWER
+# SUBMIT ANSWER (FIXED CORE)
 # =========================
 def submit_answer(session, answer):
 
+    # already finished
     if session.get("completed"):
         return {
             "score": 0,
-            "strengths": "Interview completed",
+            "strengths": "Interview already completed",
+            "weaknesses": "",
+            "ideal_answer": ""
+        }
+
+    # no question safety
+    if not session.get("questions"):
+        return {
+            "score": 0,
+            "strengths": "No question available",
+            "weaknesses": "",
+            "ideal_answer": ""
+        }
+
+    # prevent duplicate submit
+    if session.get("last_answered"):
+        return {
+            "score": 0,
+            "strengths": "You already answered this question",
             "weaknesses": "",
             "ideal_answer": ""
         }
 
     question = session["questions"][-1]
+
     evaluation = evaluate_answer(question, answer)
 
+    # save results
     session["answers"].append(answer)
     session["scores"].append(evaluation.get("score", 0))
+
+    # mark answered
+    session["last_answered"] = True
+
+    # =========================
+    # 🎯 COMPLETION LOGIC
+    # =========================
+    if session["current_index"] >= session["max_questions"]:
+        session["completed"] = True
 
     return evaluation
 

@@ -50,7 +50,6 @@ language = st.selectbox("Language", ["Bangla", "English"])
 # =========================
 if st.button("Start Interview"):
     st.session_state.session = start_interview(role, difficulty, language)
-
     st.session_state.current_question = next_question(st.session_state.session)
 
 
@@ -59,9 +58,17 @@ if st.button("Start Interview"):
 # =========================
 if st.session_state.session:
 
+    session = st.session_state.session
+
+    # ✅ PROGRESS (SAFE)
+    st.info(
+        f"📊 Progress: Question {session['current_index']} / {session['max_questions']}"
+    )
+
     st.subheader("Current Question")
 
-    if st.session_state.session.get("completed"):
+    # ✅ SHOW QUESTION / COMPLETION
+    if session.get("completed"):
         st.success("🎉 Interview Completed!")
 
     elif st.session_state.current_question:
@@ -71,7 +78,6 @@ if st.session_state.session:
 
     col1, col2 = st.columns(2)
 
-
     # =========================
     # SUBMIT ANSWER
     # =========================
@@ -80,10 +86,7 @@ if st.session_state.session:
 
             if user_answer.strip():
 
-                evaluation = submit_answer(
-                    st.session_state.session,
-                    user_answer
-                )
+                evaluation = submit_answer(session, user_answer)
 
                 st.success("Done!")
 
@@ -93,9 +96,12 @@ if st.session_state.session:
                 st.write(f"**Weaknesses:** {evaluation['weaknesses']}")
                 st.write(f"**Ideal Answer:** {evaluation['ideal_answer']}")
 
+                # ✅ SHOW COMPLETION ONLY AFTER SUBMIT
+                if session.get("completed"):
+                    st.success("🎉 Interview Completed!")
+
             else:
                 st.warning("Please write an answer first.")
-
 
     # =========================
     # NEXT QUESTION
@@ -103,15 +109,20 @@ if st.session_state.session:
     with col2:
         if st.button("Next Question"):
 
-            if st.session_state.session.get("completed"):
-                st.warning("Interview already completed!")
-                st.rerun()
+            # ❌ block if not answered yet
+            if not session.get("last_answered"):
+                st.warning("Please submit your answer first!")
+                st.stop()
 
-            new_q = next_question(st.session_state.session)
+            # ❌ block if completed
+            if session.get("completed"):
+                st.warning("Interview already completed!")
+                st.stop()
+
+            new_q = next_question(session)
 
             if new_q is None:
                 st.session_state.current_question = None
-                st.success("🎉 Interview Completed!")
             else:
                 st.session_state.current_question = new_q
                 st.rerun()
