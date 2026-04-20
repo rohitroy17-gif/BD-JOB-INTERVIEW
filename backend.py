@@ -3,205 +3,240 @@ import json
 import re
 from google import genai
 from dotenv import load_dotenv
+from database import get_connection
 
-# =========================
-# INIT GEMINI CLIENT
-# =========================
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-
-client = genai.Client(api_key=api_key)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # =========================
-# QUESTION GENERATION
+# AI
 # =========================
 def generate_question(role, difficulty, language, previous_questions):
-    prompt = f"""
-You are a professional technical interviewer.
 
-Generate ONE interview question for:
+    prompt = f"""
+Generate ONE interview question.
+
 Role: {role}
 Difficulty: {difficulty}
 Language: {language}
 
-Do NOT repeat these questions:
+Avoid repetition:
 {chr(10).join(previous_questions)}
 
-Return ONLY the question text.
+Return only question.
 """
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=prompt
-        )
-        return response.text.strip()
+    res = client.models.generate_content(
+        model="gemini-3-flash-preview",
+        contents=prompt
+    )
 
-    except Exception:
-        return "Could not generate question."
+    return res.text.strip()
 
 
-# =========================
-# ANSWER EVALUATION
-# =========================
 def evaluate_answer(question, answer):
+
     prompt = f"""
-You are a strict technical interviewer.
+Return JSON only.
 
-Evaluate the answer and return ONLY valid JSON.
-
-Question: {question}
-Answer: {answer}
-
-Return JSON in EXACT format:
+Q: {question}
+A: {answer}
 
 {{
-  "score": 0-10 number (can be decimal),
-  "strengths": "string",
-  "weaknesses": "string",
-  "ideal_answer": "string"
+"score": 0-10,
+"strengths": "",
+"weaknesses": "",
+"ideal_answer": ""
 }}
-
-Rules:
-- No extra text
-- No markdown
-- Only valid JSON
 """
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview",
-            contents=prompt
-        )
+    res = client.models.generate_content(
+        model="gemini-3-flash-preview",
+        contents=prompt
+    )
 
-        text = response.text.strip()
+    match = re.search(r"\{.*\}", res.text, re.DOTALL)
 
-        json_match = re.search(r"\{.*\}", text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
+    if match:
+        return json.loads(match.group())
 
-        return {
-            "score": 0,
-            "strengths": "Parsing error",
-            "weaknesses": "Invalid JSON from model",
-            "ideal_answer": ""
-        }
-
-    except Exception as e:
-        return {
-            "score": 0,
-            "strengths": "Error",
-            "weaknesses": str(e),
-            "ideal_answer": ""
-        }
-
-
-# =========================
-# START INTERVIEW
-# =========================
-def start_interview(role, difficulty, language):
     return {
+        "score": 0,
+        "strengths": "error",
+        "weaknesses": "",
+        "ideal_answer": ""
+    }
+
+
+# =========================
+# DB FUNCTIONS
+# =========================
+def save_interview(user_id, role, difficulty, language):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT INTO interviews (user_id, role, difficulty, language)
+    VALUES (?, ?, ?, ?)
+    """, (user_id, role, difficulty, language))
+
+    conn.commit()
+    iid = cur.lastrowid
+    conn.close()
+    return iid
+
+
+def save_question(interview_id, question):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT INTO questions (interview_id, question_text)
+    VALUES (?, ?)
+    """, (interview_id, question))
+
+    conn.commit()
+    qid = cur.lastrowid
+    conn.close()
+    return qid
+
+
+def save_answer(question_id, answer):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT INTO answers (question_id, answer_text)
+    VALUES (?, ?)
+    """, (question_id, answer))
+
+    conn.commit()
+    aid = cur.lastrowid
+    conn.close()
+    return aid
+
+
+def save_score(answer_id, eval):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+    INSERT INTO scores (answer_id, score, strengths, weaknesses, ideal_answer)
+    VALUES (?, ?, ?, ?, ?)
+    """, (
+        answer_id,
+        eval["score"],
+        eval["strengths"],
+        eval["weaknesses"],
+        eval["ideal_answer"]
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+# =========================
+# FLOW
+# =========================
+def start_interview(user_id, role, difficulty, language):
+
+    interview_id = save_interview(user_id, role, difficulty, language)
+
+    return {
+        "interview_id": interview_id,
+        "user_id": user_id,
         "role": role,
         "difficulty": difficulty,
         "language": language,
         "questions": [],
-        "answers": [],
-        "scores": [],
         "current_index": 0,
-        "max_questions": 2,   # you can change to 5 later
+        "max_questions": 2,
         "completed": False,
         "last_answered": False
     }
 
 
-# =========================
-# NEXT QUESTION
-# =========================
 def next_question(session):
 
-    # Stop generating more questions
     if session["current_index"] >= session["max_questions"]:
         return None
 
-    question = generate_question(
+    q = generate_question(
         session["role"],
         session["difficulty"],
         session["language"],
-        session["questions"]
+        [x["text"] for x in session["questions"]]
     )
 
-    session["questions"].append(question)
-    session["current_index"] += 1
+    qid = save_question(session["interview_id"], q)
 
-    # reset answer flag for new question
+    session["questions"].append({
+        "id": qid,
+        "text": q
+    })
+
+    session["current_index"] += 1
     session["last_answered"] = False
 
-    return question
+    return q
 
 
-# =========================
-# SUBMIT ANSWER (FIXED CORE)
-# =========================
 def submit_answer(session, answer):
 
-    # already finished
-    if session.get("completed"):
-        return {
-            "score": 0,
-            "strengths": "Interview already completed",
-            "weaknesses": "",
-            "ideal_answer": ""
-        }
+    if session["completed"]:
+        return {"score": 0, "strengths": "Completed", "weaknesses": "", "ideal_answer": ""}
 
-    # no question safety
-    if not session.get("questions"):
-        return {
-            "score": 0,
-            "strengths": "No question available",
-            "weaknesses": "",
-            "ideal_answer": ""
-        }
+    if session["last_answered"]:
+        return {"score": 0, "strengths": "Already answered", "weaknesses": "", "ideal_answer": ""}
 
-    # prevent duplicate submit
-    if session.get("last_answered"):
-        return {
-            "score": 0,
-            "strengths": "You already answered this question",
-            "weaknesses": "",
-            "ideal_answer": ""
-        }
+    q = session["questions"][-1]
 
-    question = session["questions"][-1]
+    eval = evaluate_answer(q["text"], answer)
 
-    evaluation = evaluate_answer(question, answer)
+    aid = save_answer(q["id"], answer)
+    save_score(aid, eval)
 
-    # save results
-    session["answers"].append(answer)
-    session["scores"].append(evaluation.get("score", 0))
-
-    # mark answered
     session["last_answered"] = True
 
-    # =========================
-    # 🎯 COMPLETION LOGIC
-    # =========================
     if session["current_index"] >= session["max_questions"]:
         session["completed"] = True
 
-    return evaluation
+    return eval
 
 
-# =========================
-# RESULTS
-# =========================
-def get_results(session):
+def get_results(interview_id):
 
-    scores = session.get("scores", [])
-    avg = sum(scores) / len(scores) if scores else 0
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT 
+        q.question_text,
+        a.answer_text,
+        s.score,
+        s.strengths,
+        s.weaknesses,
+        s.ideal_answer
+    FROM questions q
+    JOIN answers a ON q.id = a.question_id
+    JOIN scores s ON a.id = s.answer_id
+    WHERE q.interview_id = ?
+    """, (interview_id,))
+
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        return {
+            "average_score": 0,
+            "details": []
+        }
+
+    total = sum([r[2] for r in rows])
+    avg = total / len(rows)
 
     return {
         "average_score": avg,
-        "total_questions": len(session.get("questions", [])),
-        "scores": scores
+        "details": rows
     }
